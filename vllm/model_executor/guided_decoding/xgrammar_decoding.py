@@ -306,6 +306,7 @@ class XGrammarLogitsProcessor:
     def __post_init__(self):
         self.tokenizer_info = self.config.tokenizer_info(
             self.config.tokenizer_data)
+        self.num_speculative_tokens = 15
 
     def __getstate__(self) -> dict[str, Any]:
         return {'config': self.config, 'reasoner': self.reasoner}
@@ -359,7 +360,7 @@ class XGrammarLogitsProcessor:
 
         if len(self.matchers) == 0:
             self.matchers = [
-                xgr.GrammarMatcher(self.ctx) for _ in range(self.batch_size)
+                xgr.GrammarMatcher(self.ctx, max_rollback_tokens=self.num_speculative_tokens) for _ in range(self.batch_size)
             ]
             self.token_bitmask = xgr.allocate_token_bitmask(
                 self.batch_size, self.tokenizer_info.vocab_size)
@@ -423,3 +424,23 @@ class XGrammarLogitsProcessor:
         new_processor.prefilled = False
 
         return new_processor
+    
+    def validate_tokens(self, tokens: list[int]) -> list[int]:
+        """Checks if the list of tokens are accepted by the FSM in sequence.
+        Will not advance the FSM.
+        Returns the prefix list of tokens that are accepted by the FSM.
+        """
+        accepted_tokens = []
+        for token in tokens:
+            if self.matchers[0].accept_token(token):
+                accepted_tokens.append(token)
+            else:
+                break
+        if len(accepted_tokens) > 0:
+            # Rollback the FSM to the initial state
+            self.matchers[0].rollback(len(accepted_tokens))
+        return accepted_tokens
+
+    def rollback(self, num_tokens: int) -> None:
+        self.matchers[0].rollback(num_tokens)
+        self.num_speculative_tokens -= num_tokens

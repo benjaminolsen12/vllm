@@ -410,9 +410,9 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
         NOTE(cade): This will require a special check if the proposer worker
         does not have a sampler (e.g. ngram speculation).
         """
-        (self.scorer_worker.model_runner.sampler.include_gpu_probs_tensor
+        (self.scorer_worker.model_runner.model.sampler.include_gpu_probs_tensor
          ) = True
-        (self.scorer_worker.model_runner.sampler.
+        (self.scorer_worker.model_runner.model.sampler.
          should_modify_greedy_probs_inplace) = True
         self.proposer_worker.set_include_gpu_probs_tensor()
         self.proposer_worker.set_should_modify_greedy_probs_inplace()
@@ -782,6 +782,27 @@ class SpecDecodeWorker(LoRANotSupportedWorkerBase):
             # Generate proposals using draft worker.
             proposals = self.proposer_worker.get_spec_proposals(
                 execute_model_req, self._seq_with_bonus_token_in_last_step)
+
+        if proposals.proposal_lens.item() > 0:
+            validated_spec_tokens = execute_model_req.seq_group_metadata_list[0].sampling_params.logits_processors[0].validate_tokens(proposals.proposal_token_ids[0].tolist())
+            no_spec_tokens = len(validated_spec_tokens)
+            if no_spec_tokens > 0:
+                spec_token_ids = proposals.proposal_token_ids[:, :no_spec_tokens]
+                spec_token_probs = proposals.proposal_probs[:, :no_spec_tokens, :]
+                # spec_token_ids = torch.full_like(proposals.proposal_token_ids, -1)
+                # spec_token_probs = torch.zeros_like(proposals.proposal_probs)
+                # spec_token_ids[:, :no_spec_tokens] = proposals.proposal_token_ids[:, :no_spec_tokens]
+                # spec_token_probs[:, :no_spec_tokens, :] = proposals.proposal_probs[:, :no_spec_tokens, :]
+            else:
+                spec_token_ids = torch.full_like(proposals.proposal_token_ids, -1)
+                spec_token_probs = torch.zeros_like(proposals.proposal_probs)
+                proposals.no_proposals = True
+            proposals.proposal_token_ids = spec_token_ids
+            proposals.proposal_probs = spec_token_probs
+            proposals.proposal_lens[0] = no_spec_tokens
+            execute_model_req.num_lookahead_slots = no_spec_tokens if no_spec_tokens > 0 else 15
+            execute_model_req.seq_group_metadata_list[0].num_speculative_tokens = no_spec_tokens if no_spec_tokens > 0 else 15
+            execute_model_req.seq_group_metadata_list[0].sampling_params.logits_processors[0].num_speculative_tokens = no_spec_tokens if no_spec_tokens > 0 else 15
 
         if not self._allow_zero_draft_token_step and proposals.no_proposals:
             #TODO: Fix it #5814
